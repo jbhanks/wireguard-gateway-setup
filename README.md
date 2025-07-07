@@ -1,2 +1,2 @@
-# wireguard-gateway-setup
+# Wireguard Gateway Setup
 Sets up a Wireguard VPN for accessing private self-hosted services, and also sets up a Vultr instance to host it.
