@@ -1,0 +1,15 @@
+vultr_api_key: # Your Vultr API key.
+ssh_port:  # I prefer to use a non-standard port for SSH to avoid automated attacks.
+wireguard_port:  # I prefer to use a non-standard port for WireGuard for the same reason.
+wg_interface: wg0
+client_ip: 10.0.10.2/32 # Choose a unique IP for the client in the VPN network, I use 10.0.10.x for my VPN clients.
+vpn_target_ip: x.x.x.x # Example target IP for VPN access. In my case, this is the IP of self-hosted apps.
+# Base private key path (used for SSH and lookup)
+ssh_key_base: "~/path/to/your/ssh/key" # Adjust this to your actual SSH key path. It assumes you have an SSH key pair generated, and that there is a corresponding public key file.
+# Derive the public key path from the base
+ssh_pubkey_path: "{{ ssh_key_base }}.pub"
+# Read the contents of the public key file for user provisioning
+ssh_pubkey: "{{ lookup('file', ssh_pubkey_path) }}"
+username:  # The username for the new user on the VPS, I use 'james' for my account.
+label: # Any label you want to assign to the VPS
+hostname: # The hostname for the VPS, it can be the same as the label or something else.

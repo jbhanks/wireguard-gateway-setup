@@ -1,5 +1,6 @@
 # Various folders that usually should not be part of a git repo
 vars.yaml
 downloaded-configs/*
+rendered-cloud-config.yaml
 *.key
 *.conf

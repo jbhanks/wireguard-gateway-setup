@@ -1,0 +1,253 @@
+---
+- name: Configure Alpine server — user, SSH, awall firewall & WireGuard
+  hosts: all
+  become: yes
+  vars_files:
+    - vars.yaml
+
+  tasks:
+    - name: Install packages
+      apk:
+        name:
+          - iptables
+          - ip6tables
+          - awall
+          - wireguard-tools
+          - openrc
+        state: present
+        update_cache: yes
+
+    - name: Create {{ username }} user and SSH key
+      user:
+        name: "{{ username }}"  
+        groups: wheel
+        shell: /bin/sh
+        create_home: yes
+      register: create_user
+
+    - authorized_key:
+        user: "{{ username }}"
+        key: "{{ ssh_pubkey }}"
+      when: create_user is not skipped
+
+    - name: Configure sshd to use port and key-only
+      copy:
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          Port {{ ssh_port }}
+          PermitRootLogin no
+          PasswordAuthentication no
+          UsePAM no
+          AllowUsers {{ username }}
+
+    - name: Restart sshd
+      service:
+        name: sshd
+        state: restarted
+        enabled: yes
+
+    - name: Define awall base zone+policy (deny all)
+      copy:
+        dest: /etc/awall/optional/base.json
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          {
+            "description": "Base deny all",
+            "zone": {
+              "WAN": { "iface": ["eth0"] },
+              "WG": { "iface": ["wg0"] }
+            },
+            "policy": [
+              { "in": "WAN", "action": "drop" },
+              { "action": "reject" }
+            ]
+          }
+
+    - name: Define ssh and wg services + allow policies
+      copy:
+        dest: /etc/awall/optional/ssh-wg.json
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          {
+            "description": "Allow SSH on {{ ssh_port }} and WireGuard on {{ wireguard_port }}",
+            "service": {
+              "sshd": { "proto": "tcp", "port": {{ ssh_port }} },
+              "wg": { "proto": "udp", "port": {{ wireguard_port }} }
+            },
+            "filter": [
+              { "in": "WAN", "out": "_fw", "service": "sshd", "action": "accept" },
+              { "in": "WAN", "out": "_fw", "service": "wg", "action": "accept" },
+              { "in": "_fw", "out": "WAN", "action": "accept" },
+              { "in": "WG", "out": "WAN", "action": "accept" }
+            ]
+          }
+
+    - name: Enable policies
+      command: awall enable base ssh-wg
+      register: awall_enable
+      changed_when: "'already enabled' not in awall_enable.stdout"
+
+    - name: Activate awall non-interactively
+      command: awall activate --force
+
+    - name: Ensure WireGuard directory
+      file:
+        path: /etc/wireguard
+        state: directory
+        mode: '0700'
+
+    - name: Generate wg private key
+      command: wg genkey
+      register: wg_priv
+      args:
+        creates: /etc/wireguard/privatekey
+
+    - name: Save wg private key
+      copy:
+        content: "{{ wg_priv.stdout | trim }}\n"
+        dest: /etc/wireguard/privatekey
+        mode: '0600'
+
+    - name: Compute wg public key
+      shell: |
+        temp_file=$(mktemp)
+        echo -n "{{ wg_priv.stdout | trim }}" > "$temp_file"
+        wg pubkey < "$temp_file"
+        rm -f "$temp_file"
+      register: wg_server_pubkey
+
+    - name: Generate client private key (if missing)
+      command: wg genkey
+      register: client_priv
+      args:
+        creates: /etc/wireguard/client_privatekey
+
+    - name: Read existing client private key if not generated in this run
+      slurp:
+        src: /etc/wireguard/client_privatekey
+      register: existing_client_priv
+      when: client_priv.stdout is not defined or client_priv.stdout == ""
+
+    - name: Set client private key fact
+      set_fact:
+        client_priv_key: >-
+          {{ (client_priv.stdout | default('') | trim)
+             if client_priv.stdout
+             else (existing_client_priv.content | b64decode | trim) }}
+
+    - name: Save client private key to file (overwrite just in case)
+      copy:
+        content: "{{ client_priv_key }}\n"
+        dest: /etc/wireguard/client_privatekey
+        mode: '0600'
+
+    - name: Compute client public key
+      shell: |
+        temp_file=$(mktemp)
+        echo -n "{{ client_priv_key }}" > "$temp_file"
+        wg pubkey < "$temp_file"
+        rm -f "$temp_file"
+      register: client_pub
+
+    - name: Create wg server config
+      copy:
+        dest: /etc/wireguard/{{ wg_interface }}.conf
+        mode: '0600'
+        content: |
+          [Interface]
+          Address = 10.0.0.1/24
+          ListenPort = {{ wireguard_port }}
+          PrivateKey = {{ wg_priv.stdout | trim }}
+    
+          [Peer]
+          PublicKey = {{ client_pub.stdout | trim }}
+          AllowedIPs = {{ client_ip }}
+
+    - name: Create wg client config
+      copy:
+        dest: /etc/wireguard/client.conf
+        mode: '0600'
+        content: |
+          [Interface]
+          PrivateKey = {{ client_priv_key }}
+          Address = {{ client_ip }}
+
+          [Peer]
+          PublicKey = {{ wg_server_pubkey.stdout | trim }}
+          Endpoint = {{ server_ip}}:{{ wireguard_port }}
+          AllowedIPs = {{ vpn_target_ip }}/32
+          PersistentKeepalive = 25
+
+    - name: Enable IP forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        sysctl_set: yes
+        reload: yes
+
+    - name: Add persistent NAT masquerading rule if not present
+      shell: |
+        iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE || \
+        iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE
+      args:
+        executable: /bin/sh
+
+    - name: Save iptables rules for persistence
+      shell: iptables-save > /etc/iptables.rules
+
+    - name: Get default gateway
+      shell: ip route | awk '/default/ {print $3}'
+      register: detected_gateway
+      changed_when: false
+
+    - name: Ensure direct route to target IP via eth0 (not over wg)
+      shell: |
+        ip route del {{ vpn_target_ip }} 2>/dev/null || true
+        ip route add {{ vpn_target_ip }} via {{ detected_gateway.stdout }} dev eth0
+      args:
+        executable: /bin/sh
+
+    - name: Persist route to target via eth0 across reboots
+      copy:
+        dest: /etc/local.d/static-route.start
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          gw=$(ip route | awk '/default/ {print $3}')
+          ip route del {{ vpn_target_ip }} 2>/dev/null
+          ip route add {{ vpn_target_ip }} via "$gw" dev eth0
+
+    - name: Symlink wg-quick
+      file:
+        src: /etc/init.d/wg-quick
+        dest: /etc/init.d/wg-quick.{{ wg_interface }}
+        state: link
+
+    - name: Enable and start WireGuard
+      service:
+        name: wg-quick.{{ wg_interface }}
+        state: started
+        enabled: yes
+
+    - name: Fetch WireGuard client config from server
+      fetch:
+        src: /etc/wireguard/client.conf
+        dest: ./downloaded-configs/wg-client.conf
+        flat: yes
+
+    - name: Remove client WireGuard keys and config from server
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/wireguard/client.conf
+        - /etc/wireguard/client_privatekey
+      tags: cleanup
