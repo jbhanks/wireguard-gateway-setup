@@ -1,0 +1,5 @@
+# Various folders that usually should not be part of a git repo
+vars.yaml
+downloaded-configs/*
+*.key
+*.conf
