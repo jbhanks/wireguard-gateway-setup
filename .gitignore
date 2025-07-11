@@ -1,4 +1,5 @@
 # Various folders that usually should not be part of a git repo
+*.kate-swp
 vars.yaml
 downloaded-configs/*
 rendered-cloud-config.yaml
