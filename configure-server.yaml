@@ -30,18 +30,18 @@
         key: "{{ ssh_pubkey }}"
       when: create_user is not skipped
 
-    - name: Configure sshd to use port and key-only
-      copy:
-        dest: /etc/ssh/sshd_config
-        owner: root
-        group: root
-        mode: '0600'
-        content: |
+    - name: Set SSH hardening config
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        create: yes
+        block: |
           Port {{ ssh_port }}
           PermitRootLogin no
           PasswordAuthentication no
           UsePAM no
           AllowUsers {{ username }}
+          PubkeyAuthentication yes
+          AuthorizedKeysFile .ssh/authorized_keys
 
     - name: Restart sshd
       service:
