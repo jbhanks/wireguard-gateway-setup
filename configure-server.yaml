@@ -193,12 +193,20 @@
         sysctl_set: yes
         reload: yes
 
-    - name: Add persistent NAT masquerading rule if not present
+    # - name: Add persistent NAT masquerading rule if not present
+    #   shell: |
+    #     iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE || \
+    #     iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE
+    #   args:
+    #     executable: /bin/sh
+
+    - name: Add NAT MASQUERADE rule for all VPN client outbound traffic
       shell: |
-        iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE || \
-        iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE
+        iptables -t nat -C POSTROUTING -s 10.0.10.0/24 -o eth0 -j MASQUERADE || \
+        iptables -t nat -A POSTROUTING -s 10.0.10.0/24 -o eth0 -j MASQUERADE
       args:
         executable: /bin/sh
+
 
     - name: Save iptables rules for persistence
       shell: iptables-save > /etc/iptables.rules
@@ -251,3 +259,14 @@
         - /etc/wireguard/client.conf
         - /etc/wireguard/client_privatekey
       tags: cleanup
+
+    - name: Ensure correct SSH permissions
+      file:
+        path: "{{ item.path }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/home/{{ username }}", mode: "0755" }
+        - { path: "/home/{{ username }}/.ssh", mode: "0700" }
+        - { path: "/home/{{ username }}/.ssh/authorized_keys", mode: "0600" }

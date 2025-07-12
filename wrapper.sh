@@ -116,6 +116,9 @@ if ! nc -z "$host_ip" 22 2>/dev/null; then
     exit 1
 fi
 
+echo "sleeping for 30..."
+sleep 30
+
 # Step 6: SSH keyscan
 echo "Scanning SSH host key..."
 ssh-keygen -R "$host_ip" 2>/dev/null || true
