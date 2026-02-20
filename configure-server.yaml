@@ -193,20 +193,12 @@
         sysctl_set: yes
         reload: yes
 
-    # - name: Add persistent NAT masquerading rule if not present
-    #   shell: |
-    #     iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE || \
-    #     iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -d {{ vpn_target_ip }} -o eth0 -j MASQUERADE
-    #   args:
-    #     executable: /bin/sh
-
     - name: Add NAT MASQUERADE rule for all VPN client outbound traffic
       shell: |
         iptables -t nat -C POSTROUTING -s 10.0.10.0/24 -o eth0 -j MASQUERADE || \
         iptables -t nat -A POSTROUTING -s 10.0.10.0/24 -o eth0 -j MASQUERADE
       args:
         executable: /bin/sh
-
 
     - name: Save iptables rules for persistence
       shell: iptables-save > /etc/iptables.rules
