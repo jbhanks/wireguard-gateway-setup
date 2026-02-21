@@ -2,7 +2,9 @@
 set -euo pipefail
 
 VARS_FILE="vars.yaml"
-secret=${secret:-$(yq e '.vultr_api_key' "$VARS_FILE")} 
+secret="$(yq -r '.vultr_api_key // ""' "$VARS_FILE" | tr -d '\r\n')"
+[[ -n "$secret" ]] || { echo "vars.yaml .vultr_api_key is empty" >&2; exit 2; }
+
 
 # Step 1: Prompt for inputs
 echo "Available OS images:"
@@ -24,8 +26,9 @@ read -p "Enter desired region (e.g., ewr): " region
 # Step 2: Fill in vars.yaml
 yq e -i ".os_id = $os_id | .plan = \"$plan\" | .region = \"$region\"" "$VARS_FILE"
 
-label=$(yq e '.label' "$VARS_FILE")
-hostname=$(yq e '.hostname' "$VARS_FILE")
+label=$(yq -r '.label // ""' "$VARS_FILE" | tr -d '\r\n')
+hostname=$(yq -r '.hostname // ""' "$VARS_FILE" | tr -d '\r\n')
+
 
 # Step 3: Launch instance and capture instance ID
 echo "Launching instance..."
@@ -33,25 +36,74 @@ echo "Launching instance..."
 # Run ansible just to render the cloud-config file
 ansible-playbook render-cloud-config.yaml --extra-vars "@$VARS_FILE"
 
+echo "Rendered cloud-config"
+
 # Read and base64 encode cloud-config for the API
 cloud_config_base64=$(base64 -w 0 rendered-cloud-config.yaml)
 
-# Build JSON payload in shell or using jq
-payload=$(jq -n --arg region "$region" \
-                 --arg plan "$plan" \
-                 --arg os_id "$os_id" \
-                 --arg label "$label" \
-                 --arg hostname "$hostname" \
-                 --arg user_data "$cloud_config_base64" \
-'{
-  region: $region,
-  plan: $plan,
-  os_id: ($os_id | tonumber),
-  label: $label,
-  hostname: $hostname,
-  user_data: $user_data
-}')
+# payload="$(jq -n \
+#   --arg region "$region" \
+#   --arg plan "$plan" \
+#   --arg label "$label" \
+#   --arg hostname "$hostname" \
+#   --arg user_data "$(base64 -w 0 rendered-cloud-config.yaml)" \
+#   --argjson os_id "$os_id" \
+#   '{
+#     region: $region,
+#     plan: $plan,
+#     os_id: $os_id,
+#     label: $label,
+#     hostname: $hostname,
+#     user_data: $user_data
+#   }')"
 
+payload="$(jq -n \
+  --arg region "$region" \
+  --arg plan "$plan" \
+  --arg label "$label" \
+  --arg hostname "$hostname" \
+  --argjson os_id "$os_id" \
+  '{
+    region: $region,
+    plan: $plan,
+    os_id: $os_id,
+    label: $label,
+    hostname: $hostname
+  }')"
+
+echo "payload length: ${#payload}"
+echo "$payload" | jq .
+
+result="$(curl --http1.1 -sS -v https://api.vultr.com/v2/instances \
+  -H "Authorization: Bearer $secret" \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  --data-binary "$payload")"
+
+echo "The result is $result"
+
+# # Build JSON payload in shell or using jq
+# payload=$(jq -n --arg region "$region" \
+#                  --arg plan "$plan" \
+#                  --arg os_id "$os_id" \
+#                  --arg label "$label" \
+#                  --arg hostname "$hostname" \
+#                  --arg user_data "$cloud_config_base64" \
+# '{
+#   region: $region,
+#   plan: $plan,
+#   os_id: ($os_id | tonumber),
+#   label: $label,
+#   hostname: $hostname,
+#   user_data: $user_data
+# }')
+# 
+# echo "the payload is $payload"
+# 
+# echo "secret length: ${#secret}"
+# printf 'secret shell-escaped: <%q>\n' "$secret"
+# printf '%s' "$secret" | hexdump -C | head
+# 
 # Make the API call with curl, capture response and instance ID
 response=$(curl -s -H "Authorization: Bearer $secret" \
                 -H "Content-Type: application/json" \
@@ -130,9 +182,10 @@ mkdir -p downloaded-configs
 echo "Running Ansible configuration playbook..."
 ansible-playbook configure-server.yaml \
   -i "$host_ip," \
-  --private-key "$(yq e '.ssh_key_base' "$VARS_FILE")" \
-  -u "$(yq e '.username' "$VARS_FILE")" \
-  --extra-vars "server_ip=$host_ip" 
+  --private-key "$(yq -r '.ssh_key_base' "$VARS_FILE")" \
+  -u "$(yq -r '.username' "$VARS_FILE")" \
+  --extra-vars "server_ip=$host_ip"
+
 
 echo "Done."
 
